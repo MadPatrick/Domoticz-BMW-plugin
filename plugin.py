@@ -8,14 +8,13 @@ It uses the offical BMW's API (CarData) and creates
 corresponding devices in Domoticz.
 
 Author: Filip Demaertelaere
-Version: 5.1.0
 License: MIT
 """
 """
-<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.1.0" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
+<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.1.1" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
     <description>
         <h2>BMW CarData Plugin</h2>
-        <p>Version 5.1.0</p>
+        <p>Version 5.1.1</p>
         <br/>
         <h2>Introduction</h2>
         <p>The BMW CarData plugin provides a robust and seamless integration of your BMW vehicle with the Domoticz home automation system, essentially transforming Domoticz into a comprehensive command center for your car.</p>
@@ -42,7 +41,15 @@ License: MIT
     <params>
         <param field="Mode1" label="BMW CarData Client_id" width="200px" required="true" default=""/>
         <param field="Mode2" label="Vehicle Identification Number (VIN)" width="200px" required="true" default=""/>
+        <param field="Mode3" label="Forceer API Reset" width="75px">
+            <options>
+                <option label="Nee" value="No" default="true" />
+                <option label="JA (Reset nu)" value="Yes" />
+            </options>
+        </param>
+        
         <param field="Mode5" label="Min. Update Interval (Minutes)" width="120px" required="true" default="30"/>
+        
         <param field="Mode6" label="Debug Level" width="120px">
             <options>
                 <option label="None" value="0" default="true"/>
@@ -245,14 +252,18 @@ class PollingHandler:
         """Loads persistent state for polling from the Domoticz database."""
         state = get_config_item_db(key='polling_handler', default={})
         
+        # Haal de waarden uit de database (of gebruik default als database leeg is)
         self.calls_made_today = state.get('calls_made_today', 0)
         last_reset_day_str = state.get('last_reset_day')
         
         try:
             self.last_reset_day = datetime.fromisoformat(last_reset_day_str)
         except:
-            # Initialize to yesterdays's midnight if no state is found
+            # Als er niets in de database staat, begin op 'gisteren'
             self.last_reset_day = (datetime.now() + timedelta(days=-1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # CRUCIAAL: Voer direct de check uit of er een nieuwe dag is gestart
+        self._reset_quota() 
 
         self.calculate_next_time_call()
         Domoticz.Status(f'Quota information restored from database: calls_made_today={self.calls_made_today}; last_reset_day={self.last_reset_day}: next_api_call: {self.next_api_call_time}.')
@@ -279,16 +290,21 @@ class PollingHandler:
 
     def _reset_quota(self) -> bool:
         """
-        Resets the daily quota if a new day has started (at midnight).
-        Returns True when quota is reset due to new day; otherwise false
+        Resets the daily quota if a new day has started.
+        Verbeterde versie voor Debian 12 / Domoticz
         """
-        current_day: datetime.date = datetime.now().date()
-        last_reset_day: datetime.date = self.last_reset_day.date() if self.last_reset_day else None
+        now = datetime.now()
+        current_day = now.date()
+        
+        # Haal de dag op van de laatste reset
+        last_reset_day = self.last_reset_day.date() if self.last_reset_day else None
 
         if last_reset_day is None or current_day > last_reset_day:
-            Domoticz.Debug(f'API Polling Quota reset for new day. Calls made yesterday: {self.calls_made_today}.')
+            Domoticz.Status(f"New day detected ({current_day}). Quota will be reset.")
             self.calls_made_today = 0
             self.last_reset_day = datetime.combine(current_day, datetime.min.time())
+            self.quota_warning_giving = False  # CRUCIAAL: reset de waarschuwing
+            self._save_state() # Sla direct op in de database
             return True
         return False
 
@@ -300,6 +316,8 @@ class PollingHandler:
         """Registers a successful API call, updates state, and schedules the next call."""
         self._reset_quota()
         self.calls_made_today += 1
+
+        Domoticz.Status(f"API call executed: #{self.calls_made_today} of {self.DAILY_QUOTA} today.")
         
         # Schedule the next call immediately after registering a successful one
         self.calculate_next_time_call() 
@@ -313,49 +331,39 @@ class PollingHandler:
 
     def calculate_next_time_call(self) -> None:
         """
-        Calculates the optimal time for the next API call.
-        The algorithm spreads the remaining quota calls evenly over the remaining day.
+        Berekent wanneer de volgende call mag plaatsvinden.
         """
-        self._reset_quota()
+        self._reset_quota() # Controleer eerst of we moeten resetten
 
-        now: datetime = datetime.now()
+        now = datetime.now()
+        calls_available = self.DAILY_QUOTA - self.calls_made_today
         
-        # Quota Check and Spreading Calculation
-        calls_available: int = self.DAILY_QUOTA - self.calls_made_today
-        calls_to_spread: int = max(0, calls_available - self.RESERVED_CALLS)
-        
-        # Time remaining until midnight
-        midnight: datetime = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        time_until_midnight_sec: int = max(1, int((midnight - now).total_seconds()))
+        # Als we onder de 0 zakken (veiligheid), zet op 0
+        calls_available = max(0, calls_available)
 
-        # Minimal interval
-        min_interval_sec: int = int(Parameters.get('Mode5', 60)) * 60 
+        midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time_until_midnight_sec = max(1, int((midnight - now).total_seconds()))
 
-        if calls_to_spread > 0:            
-            # Spread the available calls evenly
-            interval_sec: int = time_until_midnight_sec // calls_to_spread
-            # Enforce a minimum interval using Parameter['Mode5'] (Max. Update Interval)
-            interval_sec = max(min_interval_sec, interval_sec)      
-            #Domoticz.Debug(f'Spreading {calls_to_spread} calls over {time_until_midnight_sec}s. Next interval: {interval_sec}s.')
+        # Mode5 is de minimale interval in minuten
+        min_interval_sec = int(Parameters.get('Mode5', 30)) * 60 
 
+        if calls_available > self.RESERVED_CALLS:
+            # Verdeel de calls over de resterende tijd
+            calls_to_spread = calls_available - self.RESERVED_CALLS
+            interval_sec = time_until_midnight_sec // calls_to_spread
+            interval_sec = max(min_interval_sec, interval_sec)
+        elif calls_available > 0:
+            # We zitten in de reserve
+            interval_sec = time_until_midnight_sec // calls_available
+            interval_sec = max(min_interval_sec, interval_sec)
         else:
-            if calls_available > 0 and time_until_midnight_sec <= self.PERIOD_CONSUME_RESERVED:
-                # The number of calls to spread is the remaining available quota (which is <= RESERVED_CALLS).
-                reserve_calls_to_spread = calls_available                
-                # Spread the remaining time evenly across the reserve calls.
-                interval_sec = time_until_midnight_sec // reserve_calls_to_spread
-                # Apply the minimum interval, just as with the dynamic spread.
-                interval_sec = max(min_interval_sec, interval_sec)
-                Domoticz.Debug(f'Quota near limit. Spreading {reserve_calls_to_spread} reserve calls over {time_until_midnight_sec}s. Next interval: {interval_sec}s.')
-            else:
-                # Quota fully exhausted (calls_available == 0) OR too early for reserve.
-                if not self.quota_warning_giving:
-                    Domoticz.Status(f'BMW CarData API daily quota fully exhausted and too early to use reserve calls (quota={self.DAILY_QUOTA}; used={self.calls_made_today}). Waiting until midnight for triggering new API updates.')
-                    self.quota_warning_giving = True
-                interval_sec = time_until_midnight_sec # Wait until midnight
+            # Quota echt op
+            interval_sec = time_until_midnight_sec
+            if not self.quota_warning_giving:
+                Domoticz.Error("BMW CarData: API Limiet (50) bereikt. Wachten tot middernacht.")
+                self.quota_warning_giving = True
 
-        # Calculate next call time and return interval in heartbeat ticks
-        self.next_api_call_time = now + timedelta(seconds=interval_sec+1)
+        self.next_api_call_time = now + timedelta(seconds=interval_sec)
         
 class MqttClientHandler:
     """
@@ -1041,6 +1049,7 @@ class CarDataAPIHandler:
             # List all existing containers
             self._list_container()
 
+        # Successfully retrieved the list of containers
         elif response_data and APIData.state_machine == API.LIST_CONTAINER and status == '200':
             Domoticz.Debug(f"Container data received: {response_data}")
             containerData: List[Dict] = response_data.get('containers', [])
@@ -1067,6 +1076,14 @@ class CarDataAPIHandler:
             if response_data.get('exveErrorId', None) == 'CU-429':
                 Domoticz.Status(f'BMW CarData API messages received that quota is fully exhausted ({self.parent.polling_handler.get_quota()} API calls used today).')
                 self.parent.polling_handler.set_quota_exhausted()
+
+        # Application error is raised when there is no access to the container
+        # exveErrorId="CU-105"; exveErrorMsg="No permission for specified containerId"; exveNote="This application error is raised when access to the containerId used is not permitted. Reasons are that the containerId is not allocated to the user or it does not exist. Use the GET /customers/containers endpoint to retrieve the identifier."
+        elif response_data and status == '403':
+            if response_data.get('exveErrorId', None) == 'CU-105':
+                Domoticz.Status(f"BMW CarData API messages indicates problem with BMW CarData container access ({response_data.get('exveErrorMsg', None)}). Creating a new container...")
+                # Create new container
+                self._create_container()
 
         # Errors not specifically handled
         else:
@@ -1230,6 +1247,38 @@ class BasePlugin:
 
     def onStart(self) -> None:
         """Called by Domoticz when the plugin starts. Initializes configuration and connections."""
+
+        # Check for manual reset via Mode3
+        if Parameters["Mode3"] == "Yes":
+            Domoticz.Status("BMW/Mini: Manual API Quota reset (Smart Start) initiated...")
+            try:
+                now = datetime.now()
+                # Round up to the next hour for a more accurate 'passed' quota
+                calculation_hour = now.hour + 1
+                if calculation_hour > 24: calculation_hour = 24
+                
+                total_quota = 50 
+                today_midnight = now.strftime('%Y-%m-%d 00:00:00')
+                
+                # Calculation: ((next_hour / 24) * 50) + 2 (Safety Margin)
+                # We use int() + 1 to round up the decimal, then add the +2 margin
+                estimated_calls = int((calculation_hour / 24) * total_quota) + 1 + 2
+
+                reset_state = {
+                    'calls_made_today': estimated_calls, 
+                    'last_reset_day': today_midnight
+                }
+                
+                set_config_item_db(key='polling_handler', value=reset_state)
+                
+                Domoticz.Status(f"API counter reset to {estimated_calls} (estimated for {calculation_hour}:00h).")
+                Domoticz.Status("The plugin will now distribute the remaining calls over the rest of the day.")
+            except Exception as e:
+                Domoticz.Error(f"Reset failed: {str(e)}")
+            
+            Domoticz.Status("Please set the 'Force API Reset' parameter back to 'No' and click 'Update' to resume.")
+            return
+            
         Domoticz.Debug('onStart called')
 
         # Debugging
