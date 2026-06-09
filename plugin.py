@@ -1145,10 +1145,16 @@ class CarDataAPIHandler:
 
         # Errors not specifically handled
         else:
-            if status in (500, ):
-                Domoticz.Status(f"BMW CarData API Error (rc={status} - internal state={APIData.state_machine}): {data}.")
+            error_id  = response_data.get('exveErrorId',  status)  if response_data else status
+            error_msg = response_data.get('exveErrorMsg', 'Unknown error') if response_data else 'Unknown error'
+            error_note = response_data.get('exveNote', '') if response_data else ''
+            log_msg = f"BMW CarData API Error (rc={status} - internal state={APIData.state_machine}): [{error_id}] {error_msg}"
+            if error_note:
+                log_msg += f" - {error_note}"
+            if status in ('500', ):
+                Domoticz.Status(log_msg)
             else:
-                Domoticz.Error(f"BMW CarData API Error (rc={status} - internal state={APIData.state_machine}): {data}.")
+                Domoticz.Error(log_msg)
             # Reset state machine in case of error in listing container as the list of containers is only informative
             if APIData.state_machine == API.LIST_CONTAINER:
                 APIData.state_machine = API.GET_CONTAINER
