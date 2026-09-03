@@ -6,7 +6,8 @@
     "Locked": "vehicle.cabin.door.status",
     "Location": ["vehicle.cabin.infotainment.navigation.currentLocation.latitude", "vehicle.cabin.infotainment.navigation.currentLocation.longitude"],
     "Driving": "vehicle.isMoving",
-    "RemainingRangeTotal": "vehicle.drivetrain.lastRemainingRange"
+    "RemainingRangeTotal": "vehicle.drivetrain.lastRemainingRange",
+    "TirePressure": ["vehicle.chassis.axle.row1.wheel.left.tire.pressure", "vehicle.chassis.axle.row1.wheel.right.tire.pressure", "vehicle.chassis.axle.row2.wheel.left.tire.pressure", "vehicle.chassis.axle.row2.wheel.right.tire.pressure"]
     },
 "WBA21YYYYYYYYYYYY": {
     "Mileage": "vehicle.vehicle.travelledDistance",
@@ -20,6 +21,8 @@
     "Charging": "vehicle.drivetrain.electricEngine.charging.status",
     "ChargingTime": "vehicle.drivetrain.electricEngine.charging.timeToFullyCharged",
     "ChargingACLimit": "vehicle.powertrain.electric.battery.charging.acLimit.selected",
-    "BatteryLevel": "vehicle.drivetrain.batteryManagement.header"
+    "BatteryLevel": "vehicle.drivetrain.batteryManagement.header",
+    "Climatization": "vehicle.drivetrain.electricEngine.charging.profile.climatizationActive",
+    "TirePressure": ["vehicle.chassis.axle.row1.wheel.left.tire.pressure", "vehicle.chassis.axle.row1.wheel.right.tire.pressure", "vehicle.chassis.axle.row2.wheel.left.tire.pressure", "vehicle.chassis.axle.row2.wheel.right.tire.pressure"]
     }
 }
