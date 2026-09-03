@@ -1703,8 +1703,10 @@ class BasePlugin:
                 update_device( False, Devices, Parameters['Name'], tire_unit, Used=0 )
         else:
             if (status := self._get_status_from_streaming_keys('TirePressure', streaming_keys, (int, float))) and len(status) == len(streaming_keys) == len(tire_units):
+                # BMW CarData reports tire pressure in kPa; convert to bar (1 bar = 100 kPa)
                 for tire_unit, pressure in zip(tire_units, status):
-                    update_device( False, Devices, Parameters['Name'], tire_unit, pressure, pressure )
+                    pressure_bar = round(pressure / 100, 2)
+                    update_device( False, Devices, Parameters['Name'], tire_unit, pressure_bar, pressure_bar )
 
         # Clean up unused/legacy devices
         if get_unit(Devices, Parameters['Name'], UnitIdentifiers.REMOTE_SERVICES):
