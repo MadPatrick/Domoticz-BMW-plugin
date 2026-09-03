@@ -8,18 +8,18 @@ It uses the offical BMW's API (CarData) and creates
 corresponding devices in Domoticz.
 
 Author: Filip Demaertelaere
-Version: 5.1.2
+Version: 5.2.0
 License: MIT
 """
 """
-<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.1.2" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
+<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.2.0" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
     <description>
         <h2>BMW CarData Plugin</h2>
-        <p>Version 5.1.2</p>
+        <p>Version 5.2.0</p>
         <br/>
         <h2>Introduction</h2>
         <p>The BMW CarData plugin provides a robust and seamless integration of your BMW vehicle with the Domoticz home automation system, essentially transforming Domoticz into a comprehensive command center for your car.</p>
-        <p>Upon successful configuration, the plugin automatically creates a suite of virtual devices within Domoticz. These devices represent key aspects of your BMW's status, including mileage, door and window lock states, fuel and electric range, charging status, and the vehicle's real-time location and movement.</p>
+        <p>Upon successful configuration, the plugin automatically creates a suite of virtual devices within Domoticz. These devices represent key aspects of your BMW's status, including mileage, door and window lock states, fuel and electric range, charging status, tire pressure, climatization status, and the vehicle's real-time location and movement.</p>
         <p>To ensure optimal performance and security, this plugin requires a valid MyBMW account with corresponding credentials.</p>
         <p>It is important to note that this plugin is entirely dependent on the data made available by the BMW Open Data Platform. The BMW CarData plugin utilizes the Streaming API (MQTT-based) to retrieve vehicle information, meaning there is no periodic polling by the Domoticz API towards the BMW Open Data Platform. For detailed information, please refer to the official resource: <a href="https://bmw-cardata.bmwgroup.com/thirdparty/public/car-data/overview">https://bmw-cardata.bmwgroup.com/thirdparty/public/car-data/overview</a>.</p>
         <p>Keep in mind that no data is sent by the BMW Open Data Platform in streaming mode when not any event happens at car level.</p>
@@ -96,6 +96,11 @@ class UnitIdentifiers(IntEnum):
     HOME = auto()
     AC_LIMITS = auto()
     CHARGING_MODE = auto()
+    CLIMATE = auto()
+    TIRE_PRESSURE_FL = auto()
+    TIRE_PRESSURE_FR = auto()
+    TIRE_PRESSURE_RL = auto()
+    TIRE_PRESSURE_RR = auto()
 
 class Authenticate(IntEnum):
     """State machine during authentication"""
@@ -1680,6 +1685,27 @@ class BasePlugin:
             else:
                 update_device(False, Devices, Parameters['Name'], UnitIdentifiers.CHARGING_REMAINING, 0, 0)
 
+        # Update climatization (pre-heating/cooling) status
+        if not ( streaming_keys := self.streamingKeys.get('Climatization', None) ):
+            update_device( False, Devices, Parameters['Name'], UnitIdentifiers.CLIMATE, Used=0 )
+        else:
+            if status := self._get_status_from_streaming_keys('Climatization', [streaming_keys], bool):
+                update_device(False, Devices, Parameters['Name'], UnitIdentifiers.CLIMATE,
+                              1 if status[0] else 0, 100 if status[0] else 0)
+
+        # Update tire pressure (expects exactly 4 keys: front-left, front-right, rear-left, rear-right)
+        tire_units = (
+            UnitIdentifiers.TIRE_PRESSURE_FL, UnitIdentifiers.TIRE_PRESSURE_FR,
+            UnitIdentifiers.TIRE_PRESSURE_RL, UnitIdentifiers.TIRE_PRESSURE_RR
+        )
+        if not ( streaming_keys := self.streamingKeys.get('TirePressure', None) ):
+            for tire_unit in tire_units:
+                update_device( False, Devices, Parameters['Name'], tire_unit, Used=0 )
+        else:
+            if (status := self._get_status_from_streaming_keys('TirePressure', streaming_keys, (int, float))) and len(status) == len(streaming_keys) == len(tire_units):
+                for tire_unit, pressure in zip(tire_units, status):
+                    update_device( False, Devices, Parameters['Name'], tire_unit, pressure, pressure )
+
         # Clean up unused/legacy devices
         if get_unit(Devices, Parameters['Name'], UnitIdentifiers.REMOTE_SERVICES):
             update_device( False, Devices, Parameters['Name'], UnitIdentifiers.REMOTE_SERVICES, Used=0 )
@@ -1853,6 +1879,26 @@ class BasePlugin:
         # NOT USED:  Create device for Charging Mode
         if get_unit(Devices, Parameters['Name'], UnitIdentifiers.CHARGING_MODE):
             update_device( False, Devices, Parameters['Name'], UnitIdentifiers.CHARGING_MODE, Used=0 )
+
+        # Create climatization (pre-heating/cooling) status device
+        if not get_unit(Devices, Parameters['Name'], UnitIdentifiers.CLIMATE):
+            Domoticz.Unit(
+                DeviceID=Parameters['Name'], Unit=UnitIdentifiers.CLIMATE, Name=f"{Parameters['Name']} - Climatization",
+                Type=244, Subtype=73, Switchtype=0, Image=Images[_IMAGE].ID, Used=1
+            ).Create()
+
+        # Create tire pressure devices (front left/right, rear left/right)
+        for unit_id, label in (
+            (UnitIdentifiers.TIRE_PRESSURE_FL, 'Tire pressure (front left)'),
+            (UnitIdentifiers.TIRE_PRESSURE_FR, 'Tire pressure (front right)'),
+            (UnitIdentifiers.TIRE_PRESSURE_RL, 'Tire pressure (rear left)'),
+            (UnitIdentifiers.TIRE_PRESSURE_RR, 'Tire pressure (rear right)'),
+        ):
+            if not get_unit(Devices, Parameters['Name'], unit_id):
+                Domoticz.Unit(
+                    DeviceID=Parameters['Name'], Unit=unit_id, Name=f"{Parameters['Name']} - {label}",
+                    TypeName='Custom', Options={'Custom': '0;bar'}, Image=Images[_IMAGE].ID, Used=1
+                ).Create()
 
 global _plugin
 _plugin = BasePlugin()

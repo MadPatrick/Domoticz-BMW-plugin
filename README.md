@@ -36,6 +36,8 @@ From **plugin version 5.0.0**, this Domoticz plugin utilizes the official **BMW 
 * Home detection (geofencing)
 * Status of doors, windows, and trunk
 * Remaining range (fuel & electric)
+* Tire pressure (front left/right, rear left/right)
+* Climatization status (pre-heating/pre-cooling active)
 
 **🔌 Additional for Electric Vehicles:**
 * Charging status
@@ -133,6 +135,8 @@ The file `Bmw_keys_streaming.json` maps the BMW CarData streaming keys to the im
 | **Single key** | Single string | `"Mileage": "vehicle.vehicle.travelledDistance"` |
 | **Multiple keys** | JSON Array | `"Doors": ["key1", "key2", ...]` |
 
+> **NOTE on `TirePressure`:** The 4 keys must be listed in a **fixed order**: front-left, front-right, rear-left, rear-right. A partial or missing set of readings for a given update cycle is skipped rather than reported against the wrong wheel.
+
 > **NOTE:** If an option is removed from this JSON file, the corresponding Domoticz device will automatically be set to **UNUSED** (e.g., removing 'Charging' for a gasoline-only car). Information is only available if the keys are activated in the **Activation of BMW CarData** section.
 
 #### Configuration File Example
@@ -145,7 +149,8 @@ The file `Bmw_keys_streaming.json` maps the BMW CarData streaming keys to the im
         "Locked": "vehicle.cabin.door.status",
         "Location": ["vehicle.cabin.infotainment.navigation.currentLocation.latitude", "vehicle.cabin.infotainment.navigation.currentLocation.longitude"],
         "Driving": "vehicle.isMoving",
-        "RemainingRangeTotal": "vehicle.drivetrain.totalRemainingRange"
+        "RemainingRangeTotal": "vehicle.drivetrain.totalRemainingRange",
+        "TirePressure": ["vehicle.chassis.axle.row1.wheel.left.tire.pressure", "vehicle.chassis.axle.row1.wheel.right.tire.pressure", "vehicle.chassis.axle.row2.wheel.left.tire.pressure", "vehicle.chassis.axle.row2.wheel.right.tire.pressure"]
     },
     "WBA21EFXXXXXXXXXX": {
         "Mileage": "vehicle.vehicle.travelledDistance",
@@ -158,7 +163,9 @@ The file `Bmw_keys_streaming.json` maps the BMW CarData streaming keys to the im
         "RemainingRangeElec": "vehicle.drivetrain.electricEngine.kombiRemainingElectricRange",
         "Charging": "vehicle.drivetrain.electricEngine.charging.hvStatus",
         "BatteryLevel": "vehicle.drivetrain.batteryManagement.header",
-        "ChargingTime": "vehicle.drivetrain.electricEngine.charging.timeRemaining"
+        "ChargingTime": "vehicle.drivetrain.electricEngine.charging.timeRemaining",
+        "Climatization": "vehicle.drivetrain.electricEngine.charging.profile.climatizationActive",
+        "TirePressure": ["vehicle.chassis.axle.row1.wheel.left.tire.pressure", "vehicle.chassis.axle.row1.wheel.right.tire.pressure", "vehicle.chassis.axle.row2.wheel.left.tire.pressure", "vehicle.chassis.axle.row2.wheel.right.tire.pressure"]
     }
 }
 ```
