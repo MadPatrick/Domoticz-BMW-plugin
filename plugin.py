@@ -888,8 +888,6 @@ class OAuth2Handler:
                 verification_uri_complete: str = data.get('verification_uri_complete', '')
                 if not verification_uri_complete:
                     verification_uri_complete = f"{data['verification_uri']}?user_code={user_code}"
-                else:
-                    verification_uri_complete = DEVICE_CODE_LINK
                 AuthenticationData.expires_in = data['expires_in']
                 AuthenticationData.interval = data.get('interval', Domoticz.Heartbeat())
 
@@ -1543,6 +1541,8 @@ class BasePlugin:
         """Applies a calculated driving status if the 'vehicle.isMoving' key is missing from the stream."""
         if ( streaming_keys := self.streamingKeys.get('Location', None) ):
             current_location = self._get_status_from_streaming_keys('Location', streaming_keys, float, delete_key=False)
+            if not current_location:
+                return
             # Workaround if key "vehicle.isMoving" is not supplied... calculate if vehicle is moving
             current_time: datetime = datetime.now()
             result: str = self.mov_handler.process_new_data(list(current_location), current_time)
