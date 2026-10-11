@@ -15,7 +15,7 @@ License: MIT
 from datetime import datetime
 from enum import IntEnum
 from math import radians, sin, cos, atan2, sqrt
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 # Try to import Domoticz module
 try:
