@@ -161,37 +161,52 @@ def timeout_device(devices: DeviceCollection, device_id: Optional[str] = None, t
 
 
 def check_activity_units_and_timeout(
-    devices: DeviceCollection, 
-    seconds_last_update_required: int, 
+    devices: DeviceCollection,
+    seconds_last_update_required: int,
     device_id: Optional[str] = None
 ) -> List[str]:
     """
     Check all devices of a hardware if there was recent activity and timeout if not.
-    
+
+    DomoticzEx only exposes a single TimedOut flag per DeviceID, shared by all of
+    its Units (there is no per-Unit TimedOut). A DeviceID is therefore only marked
+    as timed out when NONE of its used Units have been updated within the required
+    window; a single Unit that is legitimately silent for a long time (e.g. a data
+    point that only streams on change) must not drag down its siblings that are
+    still actively updating. As soon as at least one used Unit is recent again,
+    the DeviceID's timeout flag is cleared.
+
     Args:
         devices: Dictionary of devices
         seconds_last_update_required: Maximum seconds since last update before timing out
         device_id: Specific device ID to check, or None for all devices
-    
+
     Returns:
         List[str]: Names of timed out devices
     """
     timed_out_devices = []
-    
-    if device_id is None:
-        # Check all devices
-        for device_name, device in devices.items():
-            for unit_number, unit in device.Units.items():
-                if unit.Used and (sec := seconds_since_last_update(devices, device.DeviceID, unit_number)) > seconds_last_update_required:
-                    timeout_device(devices, device_id=device.DeviceID)
-                    timed_out_devices.append({'Name': unit.Name, 'Seconds': sec})
-    elif device := devices.get(device_id):
-        # Check specified device
+
+    device_ids = devices.keys() if device_id is None else [device_id] if device_id in devices else []
+
+    for did in device_ids:
+        device = devices[did]
+        stale_units = []
+        has_recent_unit = False
+
         for unit_number, unit in device.Units.items():
-            if unit.Used and (sec := seconds_since_last_update(devices, device_id, unit_number)) > seconds_last_update_required:
-                timeout_device(devices, device_id=device_id)
-                timed_out_devices.append({'Name': unit.Name, 'Seconds': sec})
-                
+            if not unit.Used or (sec := seconds_since_last_update(devices, did, unit_number)) is None:
+                continue
+            if sec > seconds_last_update_required:
+                stale_units.append({'Name': unit.Name, 'Seconds': sec})
+            else:
+                has_recent_unit = True
+
+        if has_recent_unit:
+            timeout_device(devices, device_id=did, timed_out=0)
+        elif stale_units:
+            timeout_device(devices, device_id=did)
+            timed_out_devices.extend(stale_units)
+
     return timed_out_devices
 
 
