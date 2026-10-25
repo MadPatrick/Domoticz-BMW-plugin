@@ -1154,8 +1154,9 @@ class CarDataAPIHandler:
             log_msg = f"BMW CarData API Error (rc={status} - internal state={APIData.state_machine}): [{error_id}] {error_msg}"
             if error_note:
                 log_msg += f" - {error_note}"
-            if status in ('500', ):
-                Domoticz.Status(log_msg)
+            # Server side errors (e.g. 502 Bad Gateway from the BMW gateway) are temporary; the next poll will retry
+            if status in ('500', '502', '503', '504'):
+                Domoticz.Status(f"{log_msg} - temporary BMW server error, will retry at next poll")
             else:
                 Domoticz.Error(log_msg)
             # Reset state machine in case of error in listing container as the list of containers is only informative
