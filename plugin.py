@@ -8,14 +8,14 @@ It uses the offical BMW's API (CarData) and creates
 corresponding devices in Domoticz.
 
 Author: Filip Demaertelaere
-Version: 5.2.2
+Version: 5.2.3
 License: MIT
 """
 """
-<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.2.2" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
+<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.2.3" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
     <description>
         <h2>BMW CarData Plugin</h2>
-        <p>Version 5.2.2</p>
+        <p>Version 5.2.3</p>
         <br/>
         <h2>Introduction</h2>
         <p>The BMW CarData plugin provides a robust and seamless integration of your BMW vehicle with the Domoticz home automation system, essentially transforming Domoticz into a comprehensive command center for your car.</p>
@@ -34,6 +34,7 @@ License: MIT
         <ul>
             <li><b>BMW CarData Client_id</b>: The unique value obtained from the MyBMW portal after creating the CarData Client.</li>
             <li><b>Vehicle Identification Number (VIN)</b>: The full, 17-character VIN of your BMW vehicle, used to identify the specific car to monitor.</li>
+            <li><b>Home radius (meters)</b>: The car counts as "home" when it is within this distance of the location set in Domoticz (Setup - Settings). Default 100.</li>
             <li><b>Update Interval (Minutes)</b>: Defines the maximum frequency (in minutes) at which the plugin will check for new data, provided information is made available by the BMW CarData service.</li>
             <li><b>Debug Level</b>: Sets the logging verbosity. Higher levels provide more diagnostic information for troubleshooting purposes.</li>
         </ul>
@@ -42,6 +43,7 @@ License: MIT
     <params>
         <param field="Mode1" label="BMW CarData Client_id" width="200px" required="true" default=""/>
         <param field="Mode2" label="Vehicle Identification Number (VIN)" width="200px" required="true" default=""/>
+        <param field="Mode3" label="Home radius (meters)" width="120px" required="false" default="100"/>
         <param field="Mode5" label="Min. Update Interval (Minutes)" width="120px" required="true" default="30"/>
         <param field="Mode6" label="Debug Level" width="120px">
             <options>
@@ -679,6 +681,11 @@ class MqttClientHandler:
                     self.parent.bmwData[vin] = {}
                 for key, value in data.get('data', {}).items(): 
                     self.parent.bmwData[vin][key] = value 
+                # New data (location, charging, doors, ...) is processed on the next
+                # heartbeat instead of waiting for the regular one-minute device update.
+                # This callback runs in the paho thread, so the devices are not updated from here.
+                if data.get('data'):
+                    self.parent.runAgainDeviceUpdate = 1
 
             # Throttled Registration of MQTT update
             now = datetime.now()
@@ -1314,6 +1321,9 @@ class BasePlugin:
 
         # Initialize Handlers
         self.mov_handler: CarMovementHandler = CarMovementHandler()
+        # Last known latitude/longitude. BMW can send them in separate messages,
+        # so each half is kept until the other one arrives.
+        self.location_cache: List[Union[float, None]] = [None, None]
         self.mqtt_handler: MqttClientHandler = MqttClientHandler(self) 
         self.auth_handler: OAuth2Handler = OAuth2Handler(self)
         self.api_handler: CarDataAPIHandler = CarDataAPIHandler(self)
@@ -1513,8 +1523,9 @@ class BasePlugin:
                     self._read_streaming_keys_file()
             except:
                 pass
-            self.workaround_driving() # Workaround to deduct if vehicle is driving or not
-            self.update_devices()
+            new_location = self._consume_location()
+            self.workaround_driving(new_location) # Workaround to deduct if vehicle is driving or not
+            self.update_devices(new_location)
             if check_activity_units_and_timeout(Devices, 7200):
                 #Domoticz.Error(f"Devices timed out! Timestamp last BMW CarData information: API: {self.polling_handler.last_call_time} - MQTT: {self.mqtt_handler.time_last_message_received}.")
                 pass
@@ -1537,10 +1548,29 @@ class BasePlugin:
                             self.api_handler.poll_telematic_data()
                 self.runAgainAPI = 5 * DomoticzConstants.MINUTE
 
-    def workaround_driving(self) -> None:
+    def _consume_location(self) -> Union[List[float], None]:
+        """
+        Takes new latitude/longitude values out of the received data and returns the
+        location when something changed and both halves are known; otherwise None.
+        Latitude and longitude may arrive in separate messages, so a half that arrives
+        alone is kept in self.location_cache instead of being thrown away.
+        """
+        streaming_keys = self.streamingKeys.get('Location', None)
+        if not streaming_keys or isinstance(streaming_keys, str) or len(streaming_keys) != 2:
+            return None
+        changed = False
+        for index, streaming_key in enumerate(streaming_keys):
+            value = self._get_status_from_streaming_keys('Location', [streaming_key], float)
+            if value:
+                self.location_cache[index] = float(value[-1])
+                changed = True
+        if changed and None not in self.location_cache:
+            return list(self.location_cache)
+        return None
+
+    def workaround_driving(self, current_location: Union[List[float], None] = None) -> None:
         """Applies a calculated driving status if the 'vehicle.isMoving' key is missing from the stream."""
-        if ( streaming_keys := self.streamingKeys.get('Location', None) ):
-            current_location = self._get_status_from_streaming_keys('Location', streaming_keys, float, delete_key=False)
+        if self.streamingKeys.get('Location', None):
             if not current_location:
                 return
             # Workaround if key "vehicle.isMoving" is not supplied... calculate if vehicle is moving
@@ -1554,12 +1584,16 @@ class BasePlugin:
                           1 if self.mov_handler.is_currently_moving else 0, 
                           100 if self.mov_handler.is_currently_moving else 0)
 
-    def update_devices(self) -> None:
+    def update_devices(self, new_location: Union[List[float], None] = None) -> None:
         """Updates all virtual devices in Domoticz based on the latest BMW data."""
         if self.Stop:
             return
         
-        if not self.bmwData.get(AuthenticationData.vin, None):
+        # The location keys are already taken out of bmwData by _consume_location(),
+        # so an update that only carries a location still has to go through.
+        if AuthenticationData.vin not in self.bmwData:
+            return
+        if not self.bmwData[AuthenticationData.vin] and not new_location:
             return
 
         # Update Mileage
@@ -1611,14 +1645,22 @@ class BasePlugin:
         if not ( streaming_keys := self.streamingKeys.get('Location', None) ):
             update_device( False, Devices, Parameters['Name'], UnitIdentifiers.HOME, Used=0 )
         else:
-            if (status := self._get_status_from_streaming_keys('Location', streaming_keys, float)) and len(status)==2:
+            if new_location:
                 # Parse home location from settings
                 home_loc: List[str] = Settings['Location'].split(';')
                 home_point: Tuple[float, float] = (float(home_loc[0]), float(home_loc[1]))
+                try:
+                    radius: float = float(Parameters.get('Mode3') or 100)
+                except ValueError:
+                    radius = 100.0
+                if radius <= 0:
+                    radius = 100.0
                 # Calculate distance from home using the tracker
-                if distance := get_distance(list(status), home_point, 'm'):
-                    update_device(False, Devices, Parameters['Name'], UnitIdentifiers.HOME,
-                                  1 if distance <= 100 else 0, 100-distance if distance <= 100 else 0)
+                distance: float = get_distance(new_location, home_point, 'm')
+                Domoticz.Debug(f'Distance from home: {distance:.0f} m (radius {radius:.0f} m)')
+                is_home: bool = distance <= radius
+                update_device(False, Devices, Parameters['Name'], UnitIdentifiers.HOME,
+                              1 if is_home else 0, int(round(100 * (1 - distance / radius))) if is_home else 0)
 
         # Driving status
         if not ( streaming_keys := self.streamingKeys.get('Driving', None) ):
