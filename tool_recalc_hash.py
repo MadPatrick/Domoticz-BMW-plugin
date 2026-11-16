@@ -9,7 +9,6 @@ Version: 5.0.0
 License: MIT
 """
 
-import sys, os
 import hashlib
 import json
 
