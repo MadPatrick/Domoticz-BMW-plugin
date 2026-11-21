@@ -8,14 +8,14 @@ It uses the offical BMW's API (CarData) and creates
 corresponding devices in Domoticz.
 
 Author: Filip Demaertelaere
-Version: 5.2.3
+Version: 5.2.4
 License: MIT
 """
 """
-<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.2.3" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
+<plugin key="Bmw" name="BMW CarData" author="Filip Demaertelaere" version="5.2.4" externallink="https://github.com/FilipDem/Domoticz-BMW-plugin">
     <description>
         <h2>BMW CarData Plugin</h2>
-        <p>Version 5.2.3</p>
+        <p>Version 5.2.4</p>
         <br/>
         <h2>Introduction</h2>
         <p>The BMW CarData plugin provides a robust and seamless integration of your BMW vehicle with the Domoticz home automation system, essentially transforming Domoticz into a comprehensive command center for your car.</p>
@@ -448,6 +448,8 @@ class MqttClientHandler:
     MQTT_KEEP_ALIVE = 45 # I found out by testing that BMW disconnects after 60 seconds if no keep_alive received.
     THROTTLE_INTERVAL_SEC = 10 # Throttle timer from mqtt messages
     RECONNECTION_PAUSE_TIME_MIN = 15
+    BROKER_ERROR_BACKOFF_MIN = (5, 10, 15) # Pause after 1st, 2nd and 3rd (and further) consecutive broker refusals
+    BROKER_ERROR_HINT_COUNT = 8 # After this many consecutive refusals, suggest checking the client-ID in the portal
     MQTT_MAX_INTERVAL_EXPECTED_MESSAGES = 3600*24
     MQTT_LOG = {16:'DEBUG', 1:'INFO', 2:'NOTICE', 8:'ERROR', 4:'WARNING'}
     
@@ -461,6 +463,7 @@ class MqttClientHandler:
         self.time_last_message_received: datetime = datetime(1, 1, 1, 0, 0, 0) # Used for throttling
         self.time_next_connect_after_critical_disconnect = None
         self.connection_errors: int = 0
+        self.broker_errors: int = 0 # Consecutive CONNACK refusals by the BMW CarData broker
 
     def is_mqtt_active(self) -> bool:
         """ Check if there was MQTT activity during the last time period """
@@ -620,6 +623,9 @@ class MqttClientHandler:
         if rc == 0:
             #Domoticz.Status(f'Connected to MQTT broker successfully with userdata: {userdata} - flags: {flags} - rc: {rc} - properties: {properties}')
             Domoticz.Debug(f'Connected to MQTT broker successfully with userdata: {userdata} - flags: {flags} - rc: {rc} - properties: {properties}')
+            if self.broker_errors:
+                Domoticz.Status(f'BMW CarData MQTT connection restored after {self.broker_errors} refused connection attempt(s).')
+                self.broker_errors = 0
 
             if hasattr(flags, 'session_present') and flags.session_present:
                 Domoticz.Debug(f'Subscriptions were kept by BMW CarData MQTT broker: no need to resubscribe!')
@@ -651,7 +657,13 @@ class MqttClientHandler:
             AuthenticationData.state_machine = Authenticate.ERROR
             
         else:
-            self.time_next_connect_after_critical_disconnect = datetime.now() + timedelta(minutes=self.RECONNECTION_PAUSE_TIME_MIN)
+            # Broker refused the connection for another reason (e.g. 131 'Implementation specific error').
+            # This is mostly a temporary problem at the BMW side: retry sooner and back off on repeated refusals.
+            self.broker_errors += 1
+            pause_min: int = self.BROKER_ERROR_BACKOFF_MIN[min(self.broker_errors, len(self.BROKER_ERROR_BACKOFF_MIN)) - 1]
+            self.time_next_connect_after_critical_disconnect = datetime.now() + timedelta(minutes=pause_min)
+            reason_string = getattr(properties, 'ReasonString', None) if properties else None
+            rc_value = getattr(rc, 'value', rc)
             # Direct stop of the background thread
             client.loop_stop() 
             # Clean up internal socket state, even if connection failed
@@ -661,7 +673,17 @@ class MqttClientHandler:
                 pass # Ignore errors if already disconnected
             # Clean up our own handler and set the error state
             self.disconnect_mqtt()
-            Domoticz.Error(f'BMW CarData MQTT connection error ({rc}). Waiting {self.RECONNECTION_PAUSE_TIME_MIN} minutes to reconnect until {self.time_next_connect_after_critical_disconnect}. Additional token information: {self.parent.auth_handler.tokens_expiry}.')
+            log_msg: str = (f"BMW CarData MQTT broker refused connection #{self.broker_errors} ({rc}, code {rc_value}"
+                            f"{f' - {reason_string}' if reason_string else ''}). "
+                            f"Waiting {pause_min} minutes to reconnect until {self.time_next_connect_after_critical_disconnect:%Y-%m-%d %H:%M:%S}. "
+                            f"Additional token information: {self.parent.auth_handler.tokens_expiry}.")
+            if self.broker_errors == 1:
+                # A single refusal is usually a temporary BMW server issue; only escalate when it repeats
+                Domoticz.Status(f'{log_msg} Probably a temporary BMW server problem.')
+            else:
+                Domoticz.Error(log_msg)
+            if self.broker_errors == self.BROKER_ERROR_HINT_COUNT:
+                Domoticz.Error('BMW CarData MQTT broker keeps refusing the connection. If this persists for hours, create a new client-ID in the BMW/Mini CarData portal and update the plugin settings.')
 
     def onMqttMessage(self, 
         client: mqtt.Client,
